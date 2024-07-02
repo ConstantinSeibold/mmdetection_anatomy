@@ -18,6 +18,14 @@ from mmcv.transforms.utils import avoid_cache_randomness, cache_randomness
 from mmengine.dataset import BaseDataset
 from mmengine.utils import is_str
 from numpy import random
+from copy import deepcopy
+
+import elasticdeform
+
+import torch
+from torchvision.ops import masks_to_boxes
+
+from skimage.draw import polygon, ellipse
 
 from mmdet.registry import TRANSFORMS
 from mmdet.structures.bbox import HorizontalBoxes, autocast_box_type
@@ -2253,6 +2261,271 @@ class CutOut(BaseTransform):
 
 
 @TRANSFORMS.register_module()
+class RandomColorFormCutOut(BaseTransform):
+    """CutOut operation.
+
+    Randomly obscure some regions (rectangles, circles, triangles) with a 
+    random color. Changes the masks as to not be contained in the obscured 
+    areas, as opposed to the original MMDet CutOut implementation.
+
+    Required Keys:
+
+    - img
+    - gt_bboxes
+    - gt_masks
+
+    Modified Keys:
+
+    - img
+    - gt_bboxes
+    - gt_masks
+
+    Args:
+        n_holes (Union[int, Tuple[int, int]]): Number of regions to be dropped.
+            If it is given as a tuple, the number of holes will be randomly
+            selected from the closed interval [``n_holes[0]``, ``n_holes[1]``].
+        cutout_shape (Optional[Union[Tuple[int, int], List[Tuple[int, int]]]]):
+            The candidate shape of dropped regions. It can be a
+            ``Tuple[int, int]`` to use a fixed cutout shape, or a
+            ``List[Tuple[int, int]]`` to randomly choose a shape
+            from the list. Defaults to None.
+        cutout_ratio (Optional[Union[Tuple[float, float], List[Tuple[float, float]]]]):
+            The candidate ratio of dropped regions. It can be a
+            ``Tuple[float, float]`` to use a fixed ratio or a
+            ``List[Tuple[float, float]]`` to randomly choose a ratio
+            from the list. Please note that ``cutout_shape`` and
+            ``cutout_ratio`` cannot both be given at the same time.
+            Defaults to None.
+        fill_min (int): Minimum value of pixel to fill in the dropped regions.
+            Defaults to 0.
+        fill_max (int): Maximum value of pixel to fill in the dropped regions.
+            Defaults to 255.
+    """
+
+    def __init__(
+        self,
+        n_holes: Union[int, Tuple[int, int]],
+        cutout_shape: Optional[Union[Tuple[int, int],
+                                     List[Tuple[int, int]]]] = None,
+        cutout_ratio: Optional[Union[Tuple[float, float],
+                                     List[Tuple[float, float]]]] = None,
+        fill_min: float = 0,
+        fill_max: float = 255
+    ) -> None:
+
+        assert (cutout_shape is None) ^ (cutout_ratio is None), \
+            'Either cutout_shape or cutout_ratio should be specified.'
+        assert (isinstance(cutout_shape, (list, tuple))
+                or isinstance(cutout_ratio, (list, tuple)))
+        if isinstance(n_holes, tuple):
+            assert len(n_holes) == 2 and 0 <= n_holes[0] < n_holes[1]
+        else:
+            n_holes = (n_holes, n_holes)
+        self.n_holes = n_holes
+        self.fill_min = fill_min
+        self.fill_max = fill_max
+
+        self.with_ratio = cutout_ratio is not None
+        self.candidates = cutout_ratio if self.with_ratio else cutout_shape
+        if not isinstance(self.candidates, list):
+            self.candidates = [self.candidates]
+
+    @autocast_box_type()
+    def transform(self, results: dict) -> dict:
+        """Call function to drop some regions of image."""
+        h, w, c = results['img'].shape
+        results_img = results['img'].copy()
+        n_holes = np.random.randint(self.n_holes[0], self.n_holes[1] + 1)
+        for _ in range(n_holes):
+            x1 = np.random.randint(0, w)
+            y1 = np.random.randint(0, h)
+            index = np.random.randint(0, len(self.candidates))
+            if not self.with_ratio:
+                cutout_w, cutout_h = self.candidates[index]
+            else:
+                cutout_w = int(self.candidates[index][0] * w)
+                cutout_h = int(self.candidates[index][1] * h)
+
+            x2 = np.clip(x1 + cutout_w, 0, w)
+            y2 = np.clip(y1 + cutout_h, 0, h)
+
+            cutout_type = np.random.choice(["box","ellipse", "triangle"])
+
+            if cutout_type == "box":
+                results_img[y1:y2, x1:x2, :] = [np.random.randint(self.fill_min,self.fill_max)] * 3
+
+                results["gt_masks"].masks[:, y1:y2, x1:x2] = 0
+            elif cutout_type == "ellipse":
+                rr,cc = ellipse(y1+(y2-y1)//2, x1+(x2-x1)//2, (y2-y1)//2, (x2-x1)//2) 
+                cur_ellipse = np.zeros(results['img'].shape)
+                cur_ellipse[rr,cc] = 1
+                results_img = results['img'] * (1-cur_ellipse) + cur_ellipse * np.random.randint(self.fill_min,self.fill_max)
+
+                results["gt_masks"].masks = results["gt_masks"].masks * (1-cur_ellipse.mean(-1))
+            elif cutout_type == "triangle":
+                # Generate random vertices for the triangle within the specified region
+                triangle_y = np.random.randint(y1, y2, size=3)
+                triangle_x = np.random.randint(x1, x2, size=3)
+
+                # Draw the triangle on the image
+                rr, cc = polygon(triangle_y, triangle_x)
+
+                results_img[rr, cc] = np.random.randint(self.fill_min,self.fill_max)
+
+                results["gt_masks"].masks[:, rr, cc] = 0
+
+        results["gt_bboxes"].tensor = masks_to_boxes(torch.tensor(results["gt_masks"].masks))
+        results['img'] = results_img.astype(np.uint8)
+        return results
+    
+    def __repr__(self):
+        repr_str = self.__class__.__name__
+        repr_str += f'(n_holes={self.n_holes}, '
+        repr_str += (f'cutout_ratio={self.candidates}, ' if self.with_ratio
+                     else f'cutout_shape={self.candidates}, ')
+        repr_str += f'fill_min={self.fill_min})'
+        repr_str += f'fill_max={self.fill_max})'
+        return repr_str
+
+
+@TRANSFORMS.register_module()
+class RandomColorFormCutOutAlpha(BaseTransform):
+    """Adapted CutOut operation.
+
+    Randomly obscure some regions (rectangles, circles, triangles) with a 
+    random color by a random alpha factor. Maintains the masks, as in the 
+    original MMDet CutOut implementation.
+
+    Required Keys:
+
+    - img
+
+    Modified Keys:
+
+    - img
+
+    Args:
+        n_holes (Union[int, Tuple[int, int]]): Number of regions to be dropped.
+            If it is given as a tuple, the number of holes will be randomly
+            selected from the closed interval [``n_holes[0]``, ``n_holes[1]``].
+        cutout_shape (Optional[Union[Tuple[int, int], List[Tuple[int, int]]]]):
+            The candidate shape of dropped regions. It can be a
+            ``Tuple[int, int]`` to use a fixed cutout shape, or a
+            ``List[Tuple[int, int]]`` to randomly choose a shape
+            from the list. Defaults to None.
+        cutout_ratio (Optional[Union[Tuple[float, float], List[Tuple[float, float]]]]):
+            The candidate ratio of dropped regions. It can be a
+            ``Tuple[float, float]`` to use a fixed ratio or a
+            ``List[Tuple[float, float]]`` to randomly choose a ratio
+            from the list. Please note that ``cutout_shape`` and
+            ``cutout_ratio`` cannot both be given at the same time.
+            Defaults to None.
+        fill_min (int): Minimum value of pixel to fill in the dropped regions.
+            Defaults to 0.
+        fill_max (int): Maximum value of pixel to fill in the dropped regions.
+            Defaults to 255.
+        alpha_min (float): Minimum transparency value for the dropped regions.
+            A value between 0.0 (completely transparent) and 1.0 (completely opaque).
+            Defaults to 0.1.
+        alpha_max (float): Maximum transparency value for the dropped regions.
+            A value between 0.0 (completely transparent) and 1.0 (completely opaque).
+            Defaults to 0.9.
+    """
+
+    def __init__(
+        self,
+        n_holes: Union[int, Tuple[int, int]],
+        cutout_shape: Optional[Union[Tuple[int, int],
+                                     List[Tuple[int, int]]]] = None,
+        cutout_ratio: Optional[Union[Tuple[float, float],
+                                     List[Tuple[float, float]]]] = None,
+        fill_min: int = 0,
+        fill_max: int = 255,
+        alpha_min: float = 0.1,
+        alpha_max: float = 0.9,
+    ) -> None:
+
+        assert (cutout_shape is None) ^ (cutout_ratio is None), \
+            'Either cutout_shape or cutout_ratio should be specified.'
+        assert (isinstance(cutout_shape, (list, tuple))
+                or isinstance(cutout_ratio, (list, tuple)))
+        if isinstance(n_holes, tuple):
+            assert len(n_holes) == 2 and 0 <= n_holes[0] < n_holes[1]
+        else:
+            n_holes = (n_holes, n_holes)
+        self.n_holes = n_holes
+        self.fill_min = fill_min
+        self.fill_max = fill_max
+
+        self.min_alpha = alpha_min
+        self.max_alpha = alpha_max
+
+        self.with_ratio = cutout_ratio is not None
+        self.candidates = cutout_ratio if self.with_ratio else cutout_shape
+        if not isinstance(self.candidates, list):
+            self.candidates = [self.candidates]
+
+    @autocast_box_type()
+    def transform(self, results: dict) -> dict:
+        """Call function to drop some regions of image."""
+        h, w, c = results['img'].shape
+
+        new_img = results['img'].copy()
+        n_holes = np.random.randint(self.n_holes[0], self.n_holes[1] + 1)
+        for _ in range(n_holes):
+
+            cur_alpha = np.random.uniform(self.min_alpha, self.max_alpha)
+
+            x1 = np.random.randint(0, w)
+            y1 = np.random.randint(0, h)
+            index = np.random.randint(0, len(self.candidates))
+            if not self.with_ratio:
+                cutout_w, cutout_h = self.candidates[index]
+            else:
+                cutout_w = int(self.candidates[index][0] * w)
+                cutout_h = int(self.candidates[index][1] * h)
+
+            x2 = np.clip(x1 + cutout_w, 0, w)
+            y2 = np.clip(y1 + cutout_h, 0, h)
+
+            cutout_type = np.random.choice(["box","ellipse", "triangle"])
+
+            if cutout_type == "box":
+                new_img[y1:y2, x1:x2, :] = results['img'][y1:y2, x1:x2, :] * (cur_alpha) + \
+                                                    (1-cur_alpha) * np.array([np.random.randint(self.fill_min,self.fill_max)]) * 3
+
+            elif cutout_type == "ellipse":
+                rr,cc = ellipse(y1+(y2-y1)//2, x1+(x2-x1)//2, (y2-y1)//2, (x2-x1)//2) 
+                cur_ellipse = np.zeros(results['img'].shape)
+                cur_ellipse[rr,cc] = (1-cur_alpha)
+                new_img = results['img'] * (1-cur_ellipse) + cur_ellipse * np.random.randint(self.fill_min,self.fill_max)
+
+            elif cutout_type == "triangle":
+                # Generate random vertices for the triangle within the specified region
+                triangle_y = np.random.randint(y1, y2, size=3)
+                triangle_x = np.random.randint(x1, x2, size=3)
+
+                # Draw the triangle on the image
+                rr, cc = polygon(triangle_y, triangle_x)
+
+                new_img[rr, cc] = results['img'][rr, cc] * (cur_alpha) + (1-cur_alpha) * np.random.randint(self.fill_min,self.fill_max)
+
+        results['img'] = new_img.astype(np.uint8)
+        return results
+    
+    def __repr__(self):
+        repr_str = self.__class__.__name__
+        repr_str += f'(n_holes={self.n_holes}, '
+        repr_str += (f'cutout_ratio={self.candidates}, ' if self.with_ratio
+                     else f'cutout_shape={self.candidates}, ')
+        repr_str += f'fill_min={self.fill_min})'
+        repr_str += f'fill_max={self.fill_max})'
+        repr_str += f'alpha_min={self.min_alpha})'
+        repr_str += f'alpha_max={self.max_alpha})'
+        return repr_str
+
+
+@TRANSFORMS.register_module()
 class Mosaic(BaseTransform):
     """Mosaic augmentation.
 
@@ -2513,6 +2786,261 @@ class Mosaic(BaseTransform):
 
 
 @TRANSFORMS.register_module()
+class CutMix(BaseTransform):
+    """CutMix data augmentation.
+
+    .. code:: text
+
+                        cutmix transform
+
+                +---------|------+
+                | cutmix  |      |
+                | image   |      |
+                |---------+      |
+                |     image      |
+                |                |
+                |                |
+                +----------------+
+
+    The cutmix transform steps are as follows:
+
+        1. A random crop is taken from another random image picked by the dataset.
+        2. The cropped patch is embedded into the original image at a random location.
+        3. The target of the cutmix transform is a combination of the original image
+        and the patch from the second image.
+
+    Required Keys:
+
+    - img
+    - gt_bboxes (BaseBoxes[torch.float32]) (optional)
+    - gt_bboxes_labels (np.int64) (optional)
+    - gt_ignore_flags (bool) (optional)
+    - cutmix_results (List[dict])
+
+    Modified Keys:
+
+    - img
+    - img_shape
+    - gt_bboxes (optional)
+    - gt_bboxes_labels (optional)
+    - gt_ignore_flags (optional)
+
+    Args:
+        img_scale (Tuple[int, int]): Image output size after cutmix pipeline.
+            The shape order should be (width, height). Defaults to (640, 640).
+        ratio_range (Tuple[float, float]): Scale ratio of cutmix image.
+            Defaults to (0.5, 1.5).
+        flip_ratio (float): Horizontal flip ratio of cutmix image.
+            Defaults to 0.5.
+        cutmix_ratio (Tuple[float, float], optional): Ratio range for the cut region.
+            If not specified, crop_min and crop_max will be used. Defaults to None.
+        pad_val (float): Pad value. Defaults to 114.0.
+        max_iters (int): The maximum number of iterations. If the number of
+            iterations is greater than `max_iters`, but gt_bbox is still
+            empty, then the iteration is terminated. Defaults to 15.
+        crop_min (int): Minimum size of the crop region. Used when cutmix_ratio is None.
+            Defaults to 64.
+        crop_max (int): Maximum size of the crop region. Used when cutmix_ratio is None.
+            Defaults to 512.
+        p (float): Probability of applying cutmix. Defaults to 0.5.
+        bbox_clip_border (bool): Whether to clip the objects outside the border
+            of the image. In some datasets like MOT17, the gt bboxes are allowed
+            to cross the border of images. Therefore, we don't need to clip the
+            gt bboxes in these cases. Defaults to True.
+    """
+
+
+    def __init__(self,
+                 img_scale: Tuple[int, int] = (640, 640),
+                 ratio_range: Tuple[float, float] = (0.5, 1.5),
+                 flip_ratio: float = 0.5,
+                 cutmix_ratio: Tuple[float, float] = None,
+                 pad_val: float = 114.0,
+                 max_iters: int = 15,
+                 crop_min: int= 64,
+                 crop_max: int= 512,
+                 p: float= 0.5,
+                 bbox_clip_border: bool = True) -> None:
+        assert isinstance(img_scale, tuple)
+        log_img_scale(img_scale, skip_square=True, shape_order='wh')
+        self.dynamic_scale = img_scale
+        self.ratio_range = ratio_range
+        self.flip_ratio = flip_ratio
+        self.pad_val = pad_val
+        self.max_iters = max_iters
+        self.with_ratio = cutmix_ratio is not None
+        self.p = p
+        if self.with_ratio:
+            self.crop_min = cutmix_ratio[0]
+            self.crop_max = cutmix_ratio[1]
+        else:
+            self.crop_min = crop_min
+            self.crop_max = crop_max
+        self.bbox_clip_border = bbox_clip_border
+        
+
+    @cache_randomness
+    def get_indexes(self, dataset: BaseDataset) -> int:
+        """Call function to collect indexes.
+
+        Args:
+            dataset (:obj:`MultiImageMixDataset`): The dataset.
+
+        Returns:
+            list: indexes.
+        """
+
+        for i in range(self.max_iters):
+            index = random.randint(0, len(dataset))
+            gt_bboxes_i = dataset[index]['gt_bboxes']
+            if len(gt_bboxes_i) != 0:
+                break
+
+        return index
+
+    @autocast_box_type()
+    def transform(self, results: dict) -> dict:
+        """CutMix transform function.
+
+        Args:
+            results (dict): Result dict.
+
+        Returns:
+            dict: Updated result dict.
+        """
+
+        assert 'mix_results' in results
+        assert len(
+            results['mix_results']) == 1, 'CutMix only support 2 images now !'
+
+        if results['mix_results'][0]['gt_bboxes'].shape[0] == 0:
+            # empty bbox
+            return results
+        
+        if np.random.uniform()<self.p:
+            return results
+        
+        retrieve_results = results['mix_results'][0]
+        retrieve_img = retrieve_results['img']
+
+        jit_factor = random.uniform(*self.ratio_range)
+        is_flip = random.uniform(0, 1) > self.flip_ratio
+
+        if len(retrieve_img.shape) == 3:
+            out_img = np.ones(
+                (self.dynamic_scale[1], self.dynamic_scale[0], 3),
+                dtype=retrieve_img.dtype) * self.pad_val
+        else:
+            out_img = np.ones(
+                self.dynamic_scale[::-1],
+                dtype=retrieve_img.dtype) * self.pad_val
+
+        # 1. keep_ratio resize
+        scale_ratio = min(self.dynamic_scale[1] / retrieve_img.shape[0],
+                          self.dynamic_scale[0] / retrieve_img.shape[1])
+        retrieve_img = mmcv.imresize(
+            retrieve_img, (int(retrieve_img.shape[1] * scale_ratio),
+                           int(retrieve_img.shape[0] * scale_ratio)))
+        
+        if is_flip:
+            retrieve_img = retrieve_img[:,::-1,:]
+
+        retrieve_masks = retrieve_results["gt_masks"]
+        retrieve_masks = retrieve_masks.rescale((int(scale_ratio*retrieve_masks.height), int(scale_ratio*retrieve_masks.width)))
+
+        if is_flip:
+            retrieve_masks = retrieve_masks.flip(flip_direction='horizontal')
+        # get cutout size 
+
+        h, w, c = results['img'].shape
+        h2, w2, c2 = retrieve_img.shape 
+
+        if not self.with_ratio:
+            cutout_w = np.random.randint(np.minimum(self.crop_min , np.minimum(w, w2) - 1),  np.minimum(self.crop_max, np.minimum(w, w2)))
+            cutout_h = np.random.randint(np.minimum(self.crop_min , np.minimum(h, h2) - 1),  np.minimum(self.crop_max, np.minimum(h, h2)))
+        else:
+            cutout_w = int(np.random.uniform(self.crop_min,self.crop_max) * np.minimum(w,w2 ))
+            cutout_h = int(np.random.uniform(self.crop_min,self.crop_max) * np.minimum(h,h2 ))
+
+        # get crop coordinates of original image
+
+        cutmix_img = results['img'].copy()
+        
+        x1 = np.random.randint(0, w-cutout_w)
+        y1 = np.random.randint(0, h-cutout_h)
+
+        x2 = np.clip(x1 + cutout_w, 0, w)
+        y2 = np.clip(y1 + cutout_h, 0, h)
+
+        # get crop coordinates of retrieved image
+        
+        
+
+        x1_2 = np.random.randint(0,w2-cutout_w)
+        y1_2 = np.random.randint(0,h2-cutout_h)
+
+        x2_2 = np.clip(x1_2 + cutout_w, 0, w2)
+        y2_2 = np.clip(y1_2 + cutout_h, 0, h2)
+
+        # insert retrieved image and adjust masks and boxes
+
+
+        cutmix_img[y1:y2, x1:x2, :] = retrieve_img[y1_2:y2_2, x1_2:x2_2, :]
+
+        original_masks = deepcopy(results["gt_masks"])
+        original_masks.masks[:, y1:y2, x1:x2] = 0
+        new_masks = deepcopy(retrieve_masks)
+
+        retrieve_gt_bboxes_labels = retrieve_results['gt_bboxes_labels']
+        retrieve_gt_ignore_flags = retrieve_results['gt_ignore_flags']
+        
+        new_masks.masks = np.zeros((new_masks.masks.shape[0], original_masks.masks.shape[1], original_masks.masks.shape[2]))
+
+        new_masks.masks[:, y1:y2, x1:x2] = retrieve_masks.masks[:, y1_2:y2_2, x1_2:x2_2]
+
+        is_empty = (new_masks.masks.reshape(-1, w*h).sum(1)>0)
+
+        retrieve_gt_bboxes_labels = retrieve_gt_bboxes_labels[is_empty]
+        retrieve_gt_ignore_flags = retrieve_gt_ignore_flags[is_empty]
+        new_masks.masks = new_masks.masks[is_empty]
+        
+        is_empty = (original_masks.masks.reshape(-1, w*h).sum(1)>0)
+        results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty]
+        results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty]
+        original_masks.masks = original_masks.masks[is_empty]
+
+        cutmix_gt_masks = original_masks.cat((original_masks, new_masks))
+        
+        cutmix_gt_bboxes_labels = np.concatenate(
+            (results['gt_bboxes_labels'], retrieve_gt_bboxes_labels), axis=0)
+        cutmix_gt_ignore_flags = np.concatenate(
+            (results['gt_ignore_flags'], retrieve_gt_ignore_flags), axis=0)
+
+        results['img'] = cutmix_img.astype(np.uint8)
+        results['img_shape'] = cutmix_img.shape[:2]
+        results["gt_bboxes"].tensor = masks_to_boxes(torch.tensor(cutmix_gt_masks.masks))
+        results['gt_masks'] = cutmix_gt_masks
+
+        results['gt_bboxes_labels'] = cutmix_gt_bboxes_labels
+        results['gt_ignore_flags'] = cutmix_gt_ignore_flags
+
+        return results
+
+    def __repr__(self):
+        repr_str = self.__class__.__name__
+        repr_str += f'(dynamic_scale={self.dynamic_scale}, '
+        repr_str += f'ratio_range={self.ratio_range}, '
+        repr_str += f'flip_ratio={self.flip_ratio}, '
+        repr_str += f'pad_val={self.pad_val}, '
+        repr_str += f'max_iters={self.max_iters}, '
+        repr_str += f'crop_min={self.crop_min}, '
+        repr_str += f'crop_max={self.crop_max}, '
+        repr_str += f'bbox_clip_border={self.bbox_clip_border})'
+        return repr_str
+
+
+
+@TRANSFORMS.register_module()
 class MixUp(BaseTransform):
     """MixUp data augmentation.
 
@@ -2580,6 +3108,7 @@ class MixUp(BaseTransform):
                  flip_ratio: float = 0.5,
                  pad_val: float = 114.0,
                  max_iters: int = 15,
+                 mixup_range: Tuple[float, float] = (0.5,0.5),
                  bbox_clip_border: bool = True) -> None:
         assert isinstance(img_scale, tuple)
         log_img_scale(img_scale, skip_square=True, shape_order='wh')
@@ -2589,6 +3118,7 @@ class MixUp(BaseTransform):
         self.pad_val = pad_val
         self.max_iters = max_iters
         self.bbox_clip_border = bbox_clip_border
+        self.mixup_range = mixup_range
 
     @cache_randomness
     def get_indexes(self, dataset: BaseDataset) -> int:
@@ -2628,6 +3158,7 @@ class MixUp(BaseTransform):
             # empty bbox
             return results
 
+        
         retrieve_results = results['mix_results'][0]
         retrieve_img = retrieve_results['img']
 
@@ -2689,21 +3220,41 @@ class MixUp(BaseTransform):
             retrieve_gt_bboxes.flip_([origin_h, origin_w],
                                      direction='horizontal')
 
+        retrieve_gt_masks = retrieve_results['gt_masks']
+        retrieve_gt_masks = retrieve_gt_masks.rescale((int(scale_ratio*retrieve_gt_masks.height), int(scale_ratio*retrieve_gt_masks.width)))
+        
+        if is_flip:
+            retrieve_gt_masks = retrieve_gt_masks.flip(flip_direction='horizontal')
+
+        retrieve_gt_masks = retrieve_gt_masks.pad(out_shape=(padded_cropped_img.shape[:2]), pad_val = 0)
+
         # 7. filter
         cp_retrieve_gt_bboxes = retrieve_gt_bboxes.clone()
         cp_retrieve_gt_bboxes.translate_([-x_offset, -y_offset])
         if self.bbox_clip_border:
             cp_retrieve_gt_bboxes.clip_([target_h, target_w])
 
+        
+
+        cp_retrieve_gt_masks = deepcopy(retrieve_gt_masks)
+        cp_retrieve_gt_masks = cp_retrieve_gt_masks.translate(out_shape = (retrieve_gt_masks.height, retrieve_gt_masks.width), offset=-x_offset, direction = "horizontal")
+        cp_retrieve_gt_masks = cp_retrieve_gt_masks.translate(out_shape = (retrieve_gt_masks.height, retrieve_gt_masks.width), offset=-y_offset, direction = "vertical")
+                
         # 8. mix up
+
+        mixup_alpha = self.mixup_range[0] if (self.mixup_range[0] == self.mixup_range[1]) else np.random.uniform(low=self.mixup_range[0], high=self.mixup_range[1])
+
         ori_img = ori_img.astype(np.float32)
-        mixup_img = 0.5 * ori_img + 0.5 * padded_cropped_img.astype(np.float32)
+        mixup_img = (mixup_alpha) * ori_img + (1-mixup_alpha) * padded_cropped_img.astype(np.float32)
+        mixup_img = np.clip(mixup_img,0,255).astype(np.uint8)
+
 
         retrieve_gt_bboxes_labels = retrieve_results['gt_bboxes_labels']
         retrieve_gt_ignore_flags = retrieve_results['gt_ignore_flags']
 
         mixup_gt_bboxes = cp_retrieve_gt_bboxes.cat(
             (results['gt_bboxes'], cp_retrieve_gt_bboxes), dim=0)
+        mixup_gt_masks = cp_retrieve_gt_masks.cat((results['gt_masks'], cp_retrieve_gt_masks))
         mixup_gt_bboxes_labels = np.concatenate(
             (results['gt_bboxes_labels'], retrieve_gt_bboxes_labels), axis=0)
         mixup_gt_ignore_flags = np.concatenate(
@@ -2712,12 +3263,14 @@ class MixUp(BaseTransform):
         # remove outside bbox
         inside_inds = mixup_gt_bboxes.is_inside([target_h, target_w]).numpy()
         mixup_gt_bboxes = mixup_gt_bboxes[inside_inds]
+        mixup_gt_masks = mixup_gt_masks[inside_inds]
         mixup_gt_bboxes_labels = mixup_gt_bboxes_labels[inside_inds]
         mixup_gt_ignore_flags = mixup_gt_ignore_flags[inside_inds]
 
         results['img'] = mixup_img.astype(np.uint8)
         results['img_shape'] = mixup_img.shape[:2]
         results['gt_bboxes'] = mixup_gt_bboxes
+        results['gt_masks'] = mixup_gt_masks
         results['gt_bboxes_labels'] = mixup_gt_bboxes_labels
         results['gt_ignore_flags'] = mixup_gt_ignore_flags
 
@@ -2730,9 +3283,79 @@ class MixUp(BaseTransform):
         repr_str += f'flip_ratio={self.flip_ratio}, '
         repr_str += f'pad_val={self.pad_val}, '
         repr_str += f'max_iters={self.max_iters}, '
+        repr_str += f'mixup_range={self.mixup_range}, '
         repr_str += f'bbox_clip_border={self.bbox_clip_border})'
         return repr_str
 
+
+@TRANSFORMS.register_module()
+class RandomElasticDeformation(BaseTransform):
+    """RandomElasticDeformation data augmentation.
+
+    The elastic deformation transform steps are as follows:
+
+        1. Generate random displacement grid.
+        2. Apply these displacements to the image, masks, and bounding boxes.
+
+    Required Keys:
+
+    - img
+    - gt_masks
+    - gt_bboxes
+
+    Modified Keys:
+
+    - img
+    - gt_masks
+    - gt_bboxes
+
+    Args:
+        min_sigma (int): Minimum standard deviation for Gaussian kernel.
+            This controls the strength of the deformation. Defaults to 0.
+        max_sigma (int): Maximum standard deviation for Gaussian kernel.
+            This controls the strength of the deformation. Defaults to 30.
+        min_points (int): Minimum number of control points for the deformation grid.
+            Defaults to 3.
+        max_points (int): Maximum number of control points for the deformation grid.
+            Defaults to 3.
+    """
+    def __init__(self,
+                 min_sigma: int = 0,
+                 max_sigma: int = 30,
+                 min_points: int = 3,
+                 max_points: int = 3) -> None:
+        
+        self.min_sigma = min_sigma
+        self.max_sigma = max_sigma
+        self.min_points = min_points
+        self.max_points = max_points
+
+    @autocast_box_type()
+    def transform(self, results: dict) -> dict:
+        
+        [img_deformed, mask_deformed] = elasticdeform.deform_random_grid([results['img'], results["gt_masks"].masks],
+                                                                          sigma = np.random.randint(self.min_sigma,self.max_sigma),
+                                                                          points = np.random.randint(self.min_points,self.max_points),
+                                                                          axis=[(0, 1), (1, 2)])
+
+        img_deformed = (img_deformed-img_deformed.min())/(img_deformed.max()-img_deformed.min())
+        img_deformed = img_deformed*255
+        
+        results['img'] = img_deformed.astype(np.uint8)
+        
+        results["gt_masks"].masks = ((mask_deformed>0)*1).astype(results["gt_masks"].masks.dtype)
+        results["gt_masks"].masks = results["gt_masks"].masks[results["gt_masks"].masks.sum(-1).sum(-1) > 0]
+        results["gt_bboxes"].tensor = masks_to_boxes(torch.tensor(results["gt_masks"].masks))
+        
+        return results
+
+    def __repr__(self):
+        repr_str = self.__class__.__name__
+        repr_str += f'(max_min_sigma={self.min_sigma}, '
+        repr_str += f'max_sigma={self.max_sigma}, '
+        repr_str += f'min_points={self.min_points}, '
+        repr_str += f'max_points={self.max_points}'
+        return repr_str
 
 @TRANSFORMS.register_module()
 class RandomAffine(BaseTransform):
