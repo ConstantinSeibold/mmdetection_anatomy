@@ -2957,6 +2957,12 @@ class CutMix(BaseTransform):
 
         if is_flip:
             retrieve_masks = retrieve_masks.flip(flip_direction='horizontal')
+        
+        print("shapes retrieved init: ", 
+              retrieve_results['gt_bboxes_labels'].shape, 
+              retrieve_results['gt_ignore_flags'].shape, retrieve_masks.masks.shape
+              )
+        
         # get cutout size 
 
         h, w, c = results['img'].shape
