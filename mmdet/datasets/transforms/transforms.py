@@ -3005,11 +3005,14 @@ class CutMix(BaseTransform):
 
         new_masks.masks[:, y1:y2, x1:x2] = retrieve_masks.masks[:, y1_2:y2_2, x1_2:x2_2]
 
-        is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
+        try:
+            is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
 
-        retrieve_gt_bboxes_labels = retrieve_gt_bboxes_labels[is_empty]
-        retrieve_gt_ignore_flags = retrieve_gt_ignore_flags[is_empty]
-        new_masks.masks = new_masks.masks[is_empty]
+            retrieve_gt_bboxes_labels = retrieve_gt_bboxes_labels[is_empty]
+            retrieve_gt_ignore_flags = retrieve_gt_ignore_flags[is_empty]
+            new_masks.masks = new_masks.masks[is_empty]
+        except:
+            import pdb; pdb.set_trace()
         
         try:
 
