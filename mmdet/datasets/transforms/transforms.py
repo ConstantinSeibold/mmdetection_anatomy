@@ -2376,10 +2376,10 @@ class RandomColorFormCutOut(BaseTransform):
 
                 new_masks.masks[:, rr, cc] = 0
 
-        is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
-        results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty]
-        results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty]
-        new_masks.masks = new_masks.masks[is_empty]
+        is_empty_2 = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
+        results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty_2]
+        results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty_2]
+        new_masks.masks = new_masks.masks[is_empty_2]
         results["gt_masks"] = new_masks
         results["gt_bboxes"].tensor = masks_to_boxes(torch.tensor(results["gt_masks"].masks))
         results['img'] = results_img.astype(np.uint8)
