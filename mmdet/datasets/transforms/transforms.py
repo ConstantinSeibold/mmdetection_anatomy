@@ -2952,7 +2952,7 @@ class CutMix(BaseTransform):
         if is_flip:
             retrieve_img = retrieve_img[:,::-1,:]
 
-        retrieve_masks = retrieve_results["gt_masks"]
+        retrieve_masks = deepcopy(retrieve_results["gt_masks"])
         retrieve_masks = retrieve_masks.rescale((int(scale_ratio*retrieve_masks.height), int(scale_ratio*retrieve_masks.width)))
 
         if is_flip:
@@ -2998,30 +2998,33 @@ class CutMix(BaseTransform):
         original_masks.masks[:, y1:y2, x1:x2] = 0
         new_masks = deepcopy(retrieve_masks)
 
-        retrieve_gt_bboxes_labels = retrieve_results['gt_bboxes_labels']
-        retrieve_gt_ignore_flags = retrieve_results['gt_ignore_flags']
+        retrieve_gt_bboxes_labels = deepcopy(retrieve_results['gt_bboxes_labels'])
+        retrieve_gt_ignore_flags = deepcopy(retrieve_results['gt_ignore_flags'])
         
         new_masks.masks = np.zeros((new_masks.masks.shape[0], original_masks.masks.shape[1], original_masks.masks.shape[2]))
 
         new_masks.masks[:, y1:y2, x1:x2] = retrieve_masks.masks[:, y1_2:y2_2, x1_2:x2_2]
 
-        try:
-            is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
 
-            retrieve_gt_bboxes_labels = retrieve_gt_bboxes_labels[is_empty]
-            retrieve_gt_ignore_flags = retrieve_gt_ignore_flags[is_empty]
-            new_masks.masks = new_masks.masks[is_empty]
-        except:
-            import pdb; pdb.set_trace()
-        
-        try:
+        is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
+        print("shapes retrieved: ", 
+              is_empty.shape, retrieve_gt_bboxes_labels.shape, 
+              retrieve_gt_ignore_flags.shape, new_masks.masks.shape
+              )
 
-            is_empty_orig = (torch.tensor(original_masks.masks).flatten(1).sum(1)>0)
-            results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty_orig]
-            results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty_orig]
-            original_masks.masks = original_masks.masks[is_empty_orig]
-        except:
-            import pdb; pdb.set_trace()
+        retrieve_gt_bboxes_labels = retrieve_gt_bboxes_labels[is_empty]
+        retrieve_gt_ignore_flags = retrieve_gt_ignore_flags[is_empty]
+        new_masks.masks = new_masks.masks[is_empty]
+
+
+        is_empty_orig = (torch.tensor(original_masks.masks).flatten(1).sum(1)>0)
+        print("shapes orig: ", 
+              is_empty_orig.shape, results['gt_bboxes_labels'].shape, 
+              results['gt_ignore_flags'].shape, original_masks.masks.shape
+              )
+        results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty_orig]
+        results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty_orig]
+        original_masks.masks = original_masks.masks[is_empty_orig]
 
         cutmix_gt_masks = original_masks.cat((original_masks, new_masks))
         
