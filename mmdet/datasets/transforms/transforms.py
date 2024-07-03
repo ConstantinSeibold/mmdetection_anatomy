@@ -2998,13 +2998,13 @@ class CutMix(BaseTransform):
 
         new_masks.masks[:, y1:y2, x1:x2] = retrieve_masks.masks[:, y1_2:y2_2, x1_2:x2_2]
 
-        is_empty = (new_masks.masks.reshape(-1, w*h).sum(1)>0)
+        is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
 
         retrieve_gt_bboxes_labels = retrieve_gt_bboxes_labels[is_empty]
         retrieve_gt_ignore_flags = retrieve_gt_ignore_flags[is_empty]
         new_masks.masks = new_masks.masks[is_empty]
         
-        is_empty = (original_masks.masks.reshape(-1, w*h).sum(1)>0)
+        is_empty = (torch.tensor(original_masks.masks).flatten(1).sum(1)>0)
         results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty]
         results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty]
         original_masks.masks = original_masks.masks[is_empty]
