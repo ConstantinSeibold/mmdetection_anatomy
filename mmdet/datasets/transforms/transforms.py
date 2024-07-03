@@ -2336,6 +2336,8 @@ class RandomColorFormCutOut(BaseTransform):
         h, w, c = results['img'].shape
         results_img = results['img'].copy()
         n_holes = np.random.randint(self.n_holes[0], self.n_holes[1] + 1)
+        new_masks = deepcopy(results["gt_masks"])
+
         for _ in range(n_holes):
             x1 = np.random.randint(0, w)
             y1 = np.random.randint(0, h)
@@ -2354,14 +2356,14 @@ class RandomColorFormCutOut(BaseTransform):
             if cutout_type == "box":
                 results_img[y1:y2, x1:x2, :] = [np.random.randint(self.fill_min,self.fill_max)] * 3
 
-                results["gt_masks"].masks[:, y1:y2, x1:x2] = 0
+                new_masks.masks[:, y1:y2, x1:x2] = 0
             elif cutout_type == "ellipse":
                 rr,cc = ellipse(y1+(y2-y1)//2, x1+(x2-x1)//2, (y2-y1)//2, (x2-x1)//2) 
                 cur_ellipse = np.zeros(results['img'].shape)
                 cur_ellipse[rr,cc] = 1
                 results_img = results['img'] * (1-cur_ellipse) + cur_ellipse * np.random.randint(self.fill_min,self.fill_max)
 
-                results["gt_masks"].masks = results["gt_masks"].masks * (1-cur_ellipse.mean(-1))
+                new_masks.masks = new_masks.masks * (1-cur_ellipse.mean(-1))
             elif cutout_type == "triangle":
                 # Generate random vertices for the triangle within the specified region
                 triangle_y = np.random.randint(y1, y2, size=3)
@@ -2372,8 +2374,13 @@ class RandomColorFormCutOut(BaseTransform):
 
                 results_img[rr, cc] = np.random.randint(self.fill_min,self.fill_max)
 
-                results["gt_masks"].masks[:, rr, cc] = 0
+                new_masks.masks[:, rr, cc] = 0
 
+        is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
+        results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty]
+        results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty]
+        new_masks.masks = new_masks.masks[is_empty]
+        results["gt_masks"] = new_masks
         results["gt_bboxes"].tensor = masks_to_boxes(torch.tensor(results["gt_masks"].masks))
         results['img'] = results_img.astype(np.uint8)
         return results
