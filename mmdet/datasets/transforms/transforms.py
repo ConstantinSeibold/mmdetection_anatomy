@@ -3011,10 +3011,14 @@ class CutMix(BaseTransform):
         retrieve_gt_ignore_flags = retrieve_gt_ignore_flags[is_empty]
         new_masks.masks = new_masks.masks[is_empty]
         
-        is_empty_orig = (torch.tensor(original_masks.masks).flatten(1).sum(1)>0)
-        results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty_orig]
-        results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty_orig]
-        original_masks.masks = original_masks.masks[is_empty_orig]
+        try:
+
+            is_empty_orig = (torch.tensor(original_masks.masks).flatten(1).sum(1)>0)
+            results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty_orig]
+            results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty_orig]
+            original_masks.masks = original_masks.masks[is_empty_orig]
+        except:
+            import pdb; pdb.set_trace()
 
         cutmix_gt_masks = original_masks.cat((original_masks, new_masks))
         
