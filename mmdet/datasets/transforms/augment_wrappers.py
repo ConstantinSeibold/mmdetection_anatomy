@@ -353,6 +353,7 @@ class RandomRandAugment(RandomChoice):
             dict: Result dict with RandAugment.
         """
         for idx in self.random_pipeline_index():
+            print(self.transforms[idx])
             results = self.transforms[idx](results)
         return results
 
