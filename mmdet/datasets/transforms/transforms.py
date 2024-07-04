@@ -20,7 +20,10 @@ from mmengine.utils import is_str
 from numpy import random
 from copy import deepcopy
 
-import elasticdeform
+try:
+    import elasticdeform
+except ImportError:
+    elasticdeform = None
 
 import torch
 from torchvision.ops import masks_to_boxes
@@ -2375,8 +2378,8 @@ class RandomColorFormCutOut(BaseTransform):
                 results_img[rr, cc] = np.random.randint(self.fill_min,self.fill_max)
 
                 new_masks.masks[:, rr, cc] = 0
-
-        is_empty_2 = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
+    
+        is_empty_2 = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0).numpy()
         results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty_2]
         results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty_2]
         new_masks.masks = new_masks.masks[is_empty_2]
@@ -2927,6 +2930,12 @@ class CutMix(BaseTransform):
         if np.random.uniform()<self.p:
             return results
         
+        print("shapes orig init: ", 
+              results['gt_bboxes_labels'].shape, 
+              results['gt_ignore_flags'].shape, 
+              results["gt_masks"].shape
+              )
+
         retrieve_results = results['mix_results'][0]
         retrieve_img = retrieve_results['img']
 
@@ -3012,7 +3021,7 @@ class CutMix(BaseTransform):
         new_masks.masks[:, y1:y2, x1:x2] = retrieve_masks.masks[:, y1_2:y2_2, x1_2:x2_2]
 
 
-        is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0)
+        is_empty = (torch.tensor(new_masks.masks).flatten(1).sum(1)>0).numpy()
         print("shapes retrieved: ", 
               is_empty.shape, retrieve_gt_bboxes_labels.shape, 
               retrieve_gt_ignore_flags.shape, new_masks.masks.shape
@@ -3023,7 +3032,7 @@ class CutMix(BaseTransform):
         new_masks.masks = new_masks.masks[is_empty]
 
 
-        is_empty_orig = (torch.tensor(original_masks.masks).flatten(1).sum(1)>0)
+        is_empty_orig = (torch.tensor(original_masks.masks).flatten(1).sum(1)>0).numpy()
         print("shapes orig: ", 
               is_empty_orig.shape, results['gt_bboxes_labels'].shape, 
               results['gt_ignore_flags'].shape, original_masks.masks.shape
