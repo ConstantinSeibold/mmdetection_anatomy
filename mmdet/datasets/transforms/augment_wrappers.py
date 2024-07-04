@@ -354,12 +354,7 @@ class RandomRandAugment(RandomChoice):
         """
         for idx in self.random_pipeline_index():            
             results = self.transforms[idx](results)
-            print( "# ##### #\n",
-                self.transforms[idx], 
-                  results['gt_bboxes_labels'].shape, 
-              results['gt_ignore_flags'].shape, 
-              results["gt_masks"].masks.shape,
-              )
+
         return results
 
     def __repr__(self) -> str:
