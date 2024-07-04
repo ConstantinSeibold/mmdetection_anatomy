@@ -3373,10 +3373,17 @@ class RandomElasticDeformation(BaseTransform):
         img_deformed = (img_deformed-img_deformed.min())/(img_deformed.max()-img_deformed.min())
         img_deformed = img_deformed*255
         
+        mask_deformed = ((mask_deformed>0)*1).astype(results["gt_masks"].masks.dtype)
+
         results['img'] = img_deformed.astype(np.uint8)
         
-        results["gt_masks"].masks = ((mask_deformed>0)*1).astype(results["gt_masks"].masks.dtype)
-        results["gt_masks"].masks = results["gt_masks"].masks[results["gt_masks"].masks.sum(-1).sum(-1) > 0]
+        is_empty_2 = (torch.tensor(mask_deformed).flatten(1).sum(1)>0).numpy()
+        mask_deformed = mask_deformed[is_empty_2]
+
+        results["gt_masks"].masks = mask_deformed
+
+        results['gt_bboxes_labels'] = results['gt_bboxes_labels'][is_empty_2]
+        results['gt_ignore_flags'] = results['gt_ignore_flags'][is_empty_2]
         results["gt_bboxes"].tensor = masks_to_boxes(torch.tensor(results["gt_masks"].masks))
         
         return results
