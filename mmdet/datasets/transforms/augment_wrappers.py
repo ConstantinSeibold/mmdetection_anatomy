@@ -353,7 +353,12 @@ class RandomRandAugment(RandomChoice):
             dict: Result dict with RandAugment.
         """
         for idx in self.random_pipeline_index():
-            print(self.transforms[idx])
+            print( "# ##### #\n",
+                self.transforms[idx], 
+                  results['gt_bboxes_labels'].shape, 
+              results['gt_ignore_flags'].shape, 
+              results["gt_masks"].masks.shape,
+              )
             results = self.transforms[idx](results)
         return results
 
