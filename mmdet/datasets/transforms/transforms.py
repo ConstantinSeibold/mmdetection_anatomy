@@ -2933,7 +2933,7 @@ class CutMix(BaseTransform):
         print("shapes orig init: ", 
               results['gt_bboxes_labels'].shape, 
               results['gt_ignore_flags'].shape, 
-              results["gt_masks"].shape
+              results["gt_masks"].masks.shape
               )
 
         retrieve_results = results['mix_results'][0]
